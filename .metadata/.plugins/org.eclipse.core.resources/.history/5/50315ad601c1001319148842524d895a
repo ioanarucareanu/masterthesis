@@ -1,0 +1,62 @@
+module lang::php::query::refactor::ProcessConnection
+
+import Exception;
+import lang::php::util::System;
+import util::Maybe;
+import IO;
+import lang::php::ast::AbstractSyntax;
+
+public data Connection = 
+	connection(Expr conVar, ActualParameter host, ActualParameter username,
+			ActualParameter password) | 
+	connection(Expr conVar, ActualParameter host, ActualParameter username,
+			ActualParameter password, ActualParameter database);
+
+public Expr createFalseConnection() {
+	return var(name(name("dbcnx")));
+}
+
+private tuple[Connection con, System sys] refactorMysqlConnect(System sys) {
+	bool found = false;
+	Connection con;
+	for(aloc <- sys) {
+		newScript = top-down-break visit(sys[aloc]) { 
+			case connectStmt:  exprstmt(binaryOperation(assign(var(name(name(conId))), call(name(name("mysql_connect")), actualParams)), expr2, op)): {
+				println("Found connect");	
+				con = connection(var(name(name(conId))), actualParams[0], actualParams[1], actualParams[2]);
+				found = true;
+				insert emptyStmt();
+			}
+		};
+		sys[aloc] = newScript;
+		if(found) {
+			return <con, sys>;
+		}
+	}
+	return <createFalseConnection(), sys>;
+}
+
+private System refactorMysqlSelect(Connection con, System sys) {
+	bool found = false;
+	for(aloc <- sys) {
+		newScript = top-down-break visit(sys[aloc]) {
+			case selectDbStmt: exprstmt(call(name(name("mysql_select_db")), actualParams)): {
+				list[ActualParameter] pdoActualParams = 
+					[con.host, actualParams[0], con.username, con.password];
+				Stmt exprStmt = exprstmt(assign(con.conVar, new(name(name("PDO")), pdoActualParams)));
+				found = true;
+				insert exprStmt;
+			} 
+		};
+		sys[aloc] = newScript;
+		if(found) {
+			return sys;
+		}
+	}
+	return sys;
+}
+
+public tuple[Expr, System] processConnectionInSystem(System input) {	
+	<newCon, newSys> = refactorMysqlConnect(input);
+	return <newCon.conVar, refactorMysqlSelect(newCon, newSys)>;	 	
+} 

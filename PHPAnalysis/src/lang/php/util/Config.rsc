@@ -2,11 +2,11 @@ module lang::php::util::Config
 
 public loc phploc = |file:///usr/bin/php|;
 
-public loc parserLoc = |file:///Users/ioana/Thesis/PHPAnalysis|;
+public loc parserLoc = |file:///Users/ioana/masterthesis/Project/masterthesis/PHPAnalysis|;
 public loc rgenLoc = parserLoc + "PHP-Parser/lib/Rascal/AST2Rascal.php";
 public loc rgenCwd = parserLoc + "PHP-Parser/lib/Rascal";
 
-public loc baseLoc = |home:///Thesis/PHPAnalysis|;
+public loc baseLoc = |home:///Users/ioana/masterthesis/Project/masterthesis/PHPAnalysis|;
 //|home:///PHPAnalysis|;
 public loc parsedDir = baseLoc + "serialized/parsed";
 public loc statsDir = baseLoc + "serialized/stats";

@@ -1,0 +1,187 @@
+module lang::php::query::refactor::QueryInspect
+
+import IO;
+import String;
+import lang::php::util::Utils;
+import lang::php::ast::AbstractSyntax;
+import lang::php::util::System;
+import lang::php::pp::PrettyPrinter;
+import List;
+import Map;
+import Node;
+import Traversal;
+import util::Maybe;
+import lang::php::query::refactor::util::ReverseStatements;
+import lang::php::query::refactor::util::AnalyzeExpr;
+import lang::php::query::refactor::QueryReport;
+import lang::php::query::refactor::QueryInfo;
+
+data QueryVarTrace = qtrace(QueryInfo info, bool foundAssign, list[int] assigns, list[int] appends, bool foundAppendIf);
+
+QueryVarTrace resetTrace() {
+	list[int] intList = [];
+	return qtrace(queryDescr(), false, intList, intList, false);
+}
+
+QueryVarTrace resetTraceFlags(QueryVarTrace trace) {
+	list[int] intList = [];
+	return qtrace(trace.info, false, intList, intList, false);
+}
+				
+map[int, tuple[Maybe[Expr] con, Maybe[Expr] result]] addToAssigns(
+	map[int, tuple[Maybe[Expr] con, Maybe[Expr] result]] globalAssigns,
+	QueryVarTrace trace) {
+		tuple[Maybe[Expr] con, Maybe[Expr] result] aTuple =
+								 <trace.info.con, trace.info.result>; 
+		for (int line <- trace.assigns) {
+			globalAssigns[line] = aTuple;
+		}
+		return globalAssigns;
+}
+	
+public QueryReport extractQueryInformation(Script scr, loc l) {
+	scr = reverseStatementsInScript(scr);
+	int cntqrun = 0; 
+	list[int] varWOpLines = [];	 
+	map[int, tuple[Maybe[Expr] con, Maybe[Expr] result]] assigns = ();
+	list[int] appends = [];
+	QueryVarTrace trace = resetTrace();
+	top-down visit(scr) {
+		case qrun : call(name(name("mysql_query")), _) : {
+			cntqrun = cntqrun + 1;
+		}
+	};
+	if (cntqrun == 0){ 
+		return report();
+	}
+	scr = top-down visit(scr) {
+		case qrun : call(name(name("mysql_query")), params): {
+			if (![actualParameter(scalar(string(_)), _)] := params && ![actualParameter(scalar(string(_)), _), _] := params && 
+				![actualParameter(scalar(encapsed(_)), _)] := params && ![actualParameter(scalar(encapsed(_)), _), _] := params &&
+				![actualParameter(binaryOperation(left, right, concat()), _)] := params && ![actualParameter(binaryOperation(left, right, concat()), _), _] := params) {
+				fail scr;
+			}
+			if (trace.info == queryDescr()) {
+				fail scr;
+			}
+			if (trace.foundAssign && size(trace.appends) > 0) {
+				varWOpLines += trace.info.line;
+			}
+			appends += trace.appends;
+			assigns = addToAssigns(assigns, trace);
+			trace = resetTrace();
+		}
+		case qrunVar: call(name(name("mysql_query")), [actualParameter(var(name(name(varName))), _)]): {
+			if (trace.info == queryDescr()) {
+				trace.info = queryDescr(nothing(), qrunVar.parameters[0].expr, qrunVar@at.begin.line, getQueryResultVariable(qrunVar));
+				trace = resetTraceFlags(trace);
+				fail scr;
+			}
+			if (trace.foundAssign && size(trace.appends) > 0) {
+				varWOpLines += trace.info.line;
+			}
+			appends += trace.appends;
+			assigns = addToAssigns(assigns, trace);
+			trace.info = queryDescr(nothing(), qrunVar.parameters[0].expr, qrunVar@at.begin.line, getQueryResultVariable(qrunVar));
+			trace = resetTraceFlags(trace);
+			}
+		//With connection argument
+		case qrunVar: call(name(name("mysql_query")), [actualParameter(var(name(name(varName))), _), _]): {
+			if (trace.info == queryDescr()) {
+				trace.info = queryDescr(just(qrunVar.parameters[1].expr), qrunVar.parameters[0].expr, qrunVar@at.begin.line, getQueryResultVariable(qrunVar));
+				trace = resetTraceFlags(trace);
+				fail scr;
+			}
+			if (trace.foundAssign && size(trace.appends) > 0) {
+				varWOpLines += trace.info.line;
+			}
+			appends += trace.appends;
+			assigns = addToAssigns(assigns, trace);
+			trace.info = queryDescr(just(qrunVar.parameters[1].expr), qrunVar.parameters[0].expr, qrunVar@at.begin.line, getQueryResultVariable(qrunVar));
+			trace = resetTraceFlags(trace);
+		}
+		case assignqVar : exprstmt(assign(var(name(name(varName))), rightAssign)): {
+			if (trace.info != queryDescr() && varName != trace.info.queryParam.varName.name.name) {
+				fail scr;
+			}
+			bool isVarComposedWithItself = isVarComposedWithItself(rightAssign, varName);
+			if (!isVarComposedWithItself) {
+				if (size(trace.appends) > 0) { 
+					trace.appends += [assignqVar@at.begin.line];
+				}
+				else if (!trace.foundAppendIf) {
+					trace.assigns += [assignqVar@at.begin.line];
+				}
+				trace.foundAssign = true;
+				fail scr;
+			}
+			if (!isAppendIfCase(trace.info.line)) { 
+				trace.appends += [assignqVar@at.begin.line];
+			}
+			else {
+				trace.foundAppendIf = true;
+			}
+		}
+		case appendqVar : exprstmt(assignWOp(var(name(name(varName))), _, concat())) : {
+			if(trace.info != queryDescr() && varName != trace.info.queryParam.varName.name.name) {
+				fail scr;
+			}
+			println(appendqVar);
+			println(trace.info);
+			if (!isAppendIfCase(trace.info.line)) { 
+				trace.appends += [appendqVar@at.begin.line];
+			}
+			else {
+				trace.foundAppendIf = true;
+			}
+		}
+	};
+	if (trace.foundAssign && size(trace.appends) > 0) {
+		varWOpLines += trace.info.line;
+	}
+	if (trace.info != queryDescr()) {
+		appends += trace.appends;
+		assigns = addToAssigns(assigns, trace);
+	}
+	QueryReport report = report(varWOpLines, assigns, appends);
+	return report; 
+}
+
+public bool isAppendIfCase(int queryLine) {
+	context = getTraversalContext()[2];
+	top-down visit(context) {
+		case ifStmt: \if(_, _, _, _): {
+			if (context != ifStmt) {
+				return false;
+			}
+			if((ifStmt@at.begin.line <= queryLine) &&
+				(ifStmt@at.end.line >= queryLine)) {
+				return false;
+			}
+			return true;
+		}
+		case elseClause: \else(_): {
+			if (context != elseClause) {
+				return false;
+			}
+			if((elseClause@at.begin.line <= queryLine) &&
+				(elseClause@at.end.line >= queryLine)) {
+				return false;
+			}
+			return true;
+		}
+	};
+	return false;
+}
+
+public Maybe[Expr] getQueryResultVariable(Expr queryCall) {
+	context = getTraversalContext()[1];
+	top-down visit(context) {
+		case assignNode : assign(var(name(name(_))), call(name(name("mysql_query")), _)): {
+			if (context == assignNode) {
+				return just(assignNode.assignTo);
+			}
+		}
+	};
+	return nothing();
+}

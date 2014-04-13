@@ -1,5 +1,5 @@
 @license{
-  Copyright (c) 2009-2013 CWI
+  Copyright (c) 2009-2012 CWI
   All rights reserved. This program and the accompanying materials
   are made available under the terms of the Eclipse Public License v1.0
   which accompanies this distribution, and is available at
@@ -9,10 +9,11 @@
 module lang::php::pp::PrettyPrinter
 
 import lang::php::ast::AbstractSyntax;
+import lang::php::analysis::cfg::CFG;
+import lang::php::analysis::cfg::BasicBlocks;
 import List;
 import String;
 import Set;
-import IO;
 
 //public data OptionExpr = someExpr(Expr expr) | noExpr();
 public str pp(someExpr(Expr expr)) = pp(expr);
@@ -137,7 +138,7 @@ public str pp(suppress(Expr expr)) = "@<pp(expr)>";
 public str pp(eval(Expr expr)) = "eval(<pp(expr)>)";
 
 //	| exit(OptionExpr exitExpr)
-public str pp(exit(OptionExpr exitExpr)) = "exit(<pp(exitExpr)>)";
+public str pp(exit(OptionExpr exitExpr)) = "die(<pp(exitExpr)>)";
 
 //	| call(NameOrExpr funName, list[ActualParameter] parameters)
 public str pp(call(name(Name funName), list[ActualParameter] parameters)) = 
@@ -172,7 +173,7 @@ public str pp(instanceOf(Expr expr, expr(Expr toCompare))) = "<pp(expr)> instanc
 public str pp(isSet(list[Expr] exprs)) = "isset(<intercalate(",",[pp(e)|e<-exprs])>)";
 
 //	| print(Expr expr)
-public str pp(Expr::print(Expr expr)) = "print(<pp(expr)>)";
+public str pp(print(Expr expr)) = "print(<pp(expr)>)";
 
 //	| propertyFetch(Expr target, NameOrExpr propertyName)
 public str pp(propertyFetch(Expr target, name(Name propertyName))) = "<pp(target)>-\><pp(propertyName)>";
@@ -195,15 +196,6 @@ public str pp(scalar(Scalar scalarVal)) = pp(scalarVal);
 
 //	| var(NameOrExpr varName)	
 public str pp(var(NameOrExpr varName)) = "$<pp(varName)>";
-
-//  | yield(OptionExpr keyExpr, OptionExpr valueExpr)
-public str pp(yield(noExpr(), noExpr())) = "yield";
-public str pp(yield(noExpr(), someExpr(Expr v))) = "yield <pp(v)>";
-public str pp(yield(someExpr(Expr k), someExpr(Expr v))) = "yield <pp(k)> =\> <pp(v)>";
-public str pp(yield(someExpr(Expr k), noExpr())) { throw "Yielding a key with no value makes no sense."; }
-	
-//  | listExpr(list[OptionExpr] listExprs)
-public str pp(listExpr(list[OptionExpr] listExprs)) = "list(<intercalate(", ", [ pp(oe) | oe <- listExprs ])>)";
 
 //public data Op = bitwiseAnd() | bitwiseOr() | bitwiseXor() | concat() | div() 
 //			   | minus() | \mod() | mul() | plus() | rightShift() | leftShift()
@@ -304,7 +296,8 @@ public str pp(namespaceConstant()) = "__NAMESPACE__";
 public str pp(traitConstant()) = "__TRAIT__";
 public str pp(Scalar::float(real r)) = "<r>";
 public str pp(integer(int i)) = "<i>";
-public str pp(Scalar::string(str s)) = "\'<s>\'";
+//public str pp(Scalar::string(str s)) = "\'<s>\'";
+public str pp(Scalar::string(str s)) = "\"<s>\"";
 public str pp(encapsed(list[Expr] parts)) = intercalate(".",[pp(p) | p <- parts]);
 
 //public data Stmt 
@@ -337,14 +330,14 @@ public str pp(do(Expr cond, list[Stmt] body)) =
 	'}";
 
 //	| echo(list[Expr] exprs)
-public str pp(echo(list[Expr] exprs)) = "echo(<intercalate(".",[pp(e)|e<-exprs])>);";
+public str pp(echo(list[Expr] exprs)) = "echo(<intercalate(".",[pp(e)|e<-exprs])>)";
 
 //	| exprstmt(Expr expr)
 public str pp(exprstmt(Expr expr)) = "<pp(expr)>;";
 
 //	| \for(list[Expr] inits, list[Expr] conds, list[Expr] exprs, list[Stmt] body)
 public str pp(\for(list[Expr] inits, list[Expr] conds, list[Expr] exprs, list[Stmt] body)) = 
-	"for(<intercalate(",",[pp(i)|i<-inits])> ; <intercalate(",",[pp(c)|c<-conds])> ; <intercalate(",",[pp(e)|e<-exprs])> {
+	"for(<intercalate(",",[pp(i)|i<-inits])> ; <intercalate(",",[pp(c)|c<-conds])> ; <intercalate(",",[pp(e)|e<-exprs])>) {
 	'	<for (b <- body) {><pp(b)><}>
 	'}";
 
@@ -467,15 +460,6 @@ public str pp(\while(Expr cond, list[Stmt] body)) =
 	'	<for (b <- body) {><pp(b)><}>
 	'}";
 
-//	| emptyStmt()
-public str pp(emptyStmt()) = ";";
-
-//	| block(list[Stmt] body)
-public str pp(block(list[Stmt] body)) =
-	"{
-	'	<for (b <- body) {><pp(b)><}>
-	'}";
-	
 //public data Declaration = declaration(str key, Expr val);
 public str pp(declaration(str key, Expr val)) = "key=<pp(val)>";
 
@@ -506,8 +490,7 @@ public str pp(\case(someExpr(Expr e), list[Stmt] body)) =
 //public data ElseIf = elseIf(Expr cond, list[Stmt] body);
 public str pp(elseIf(Expr cond, list[Stmt] body)) =
 	"elseif (<pp(cond)>) {
-	'  <for (b <- body) {><pp(b)><}>
-	'}"
+	'  <for (b <- body) {><pp(b)><}>"
 	;
 	
 //public data Else = \else(list[Stmt] body);
@@ -631,14 +614,17 @@ public str pp(interface(str interfaceName, list[Name] extends, list[ClassItem] m
 //public data TraitDef = trait(str traitName, list[ClassItem] members);
 
 //public data StaticVar = staticVar(str name, OptionExpr defaultValue);
-public str pp(staticVar(str vname, SomeExpr(Expr defaultValue))) = "static $<vname> = <pp(defaultValue)>";
-public str pp(staticVar(str vname, NoExpr())) = "static $<vname>";
+public str pp(staticVar(str name, SomeExpr(Expr defaultValue))) = "static $<name> = <pp(defaultValue)>";
+public str pp(staticVar(str name, NoExpr())) = "static $<name>";
+
+public str pp(emptyStmt()) = "";
+public str pp(block(list[Stmt] body)) = intercalate("\n", [pp(b) | b <- body]);
 
 //public data Script = script(list[Stmt] body) | errscript(str err);
 public str pp(script(list[Stmt] body)) = intercalate("\n",[pp(b) | b <- body]);
-public str pp(errscript(str err)) {
-	println("Cannot print an error script as a normal PHP script");
-	return "\n//<err>\n";
-}
+
+//CFGNodes
+public str pp(exprNode(Expr expr, Lab l)) = pp(expr);
+public str pp(stmtNode(Stmt stmt, Lab l)) = pp(stmt);
 
 public default str pp(node n) { throw "No pretty-printer found for node <n>"; }
